@@ -6,30 +6,13 @@ from typing import Annotated
 from sqlmodel import Field, Session, create_engine, select, SQLModel
 
 
-app = FastAPI()
-
-bandas = [
-    {"id":0, "nombre": "Metallica", "genero": "Metal", "pais": "Estados Unidos"},
-    {"id":1, "nombre": "Black Sabbath","genero": "Black Metal", "pais": "Reino Unido"},
-    {"id":2, "nombre": "Iron Maiden", "genero": "Heavy Metal", "pais": "Reino Unido"},
-    {"id":3, "nombre": "Slayer", "genero": "Thrash Metal", "pais": "Estados Unidos"},
-]
-
 load_dotenv()  # Carga las variables de entorno desde el archivo .env
 
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_NAME = os.getenv("DB_NAME")
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT")
+# Lee directamente la URL de conexión completa desde el archivo .env
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Configuración de la conexión a la base de datos
-url_conecction = (
-    f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}"
-    f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-) 
-
-engine = create_engine(url_conecction)
+# Creamos el engine usando la URL que viene del .env
+engine = create_engine(DATABASE_URL)
 
 
 def create_db_and_tables():
@@ -63,59 +46,79 @@ class Bandaupdate(Bandabase):
     nombre : str | None = None
     genero : str | None = None
     pais : str | None = None
+    
+    
+
+app = FastAPI(title="API CRUD de Bandas de Metal", description="Una API para gestionar bandas de metal", version="1.0.0")
+
+
 
 @app.on_event("startup")
 def on_startup():
     create_db_and_tables()  # Crea la base de datos y las tablas si no existen
 
-@app.get("/bandas/")
-def list_bandas(limit: int | None = None):
-    if limit is None:
-        return bandas
-    else:
-        return bandas[0:limit]
-
-@app.get("/bandas/{banda_id}")
-def get_banda(banda_id : int):
-    for banda in bandas:  # esto hace que busque en la lista de bandas y chequee si hay una con ese id
-        if banda["id"] == banda_id:
-            return banda
-    raise HTTPException(status_code=404, detail="Banda no encontrada")
 
 
-@app.post("/bandas/")
-async def create_banda(banda: Banda):
-    new_id = bandas[-1]["id"] + 1 if bandas else 0
-    
-    nueva_banda_dict= banda.model_dump() # Convierte el objeto Pydantic a un diccionario 
-    
-    nueva_banda_dict["id"] = new_id # Agrega el nuevo id a la banda
-    
-    bandas.append(nueva_banda_dict) # Agrega la nueva banda a la lista de bandas
-    
-    return {"Mensaje": "Banda creada exitosamente", "banda": nueva_banda_dict}
+#endpoint crear banda
 
-@app.put("/bandas/{banda_id}")
-async def update_banda(banda_id: int, banda_update: Banda):
-    for banda in bandas:
-        if banda["id"] == banda_id:
-            datos_actualizados = banda_update.model_dump()  # Convierte el objeto Pydantic a un diccionario
-            
-            banda.update(datos_actualizados)
-            
-            banda["id"] = banda_id  # Asegura que el id no se pierda durante la actualización
-            return {"Mensaje": "Banda actualizada exitosamente", "banda": banda}
-    
-    raise HTTPException(status_code=404, detail="Banda no encontrada")
+@app.post("/bandas/", response_model=BandaPublic)
+def create_banda(banda: Bandacreate, session: SessionDep):
+    db_banda = Banda.model_validate(banda)  # Convierte el objeto Pydantic a un objeto SQLModel
+    session.add(db_banda)
+    session.commit()
+    session.refresh(db_banda)
+    return db_banda
 
+#endpoint para listar bandas segund id
+
+@app.get("/bandas/{banda_id}", response_model=BandaPublic)
+def leer_banda(banda_id: int, session: SessionDep):
+    banda = session.get(Banda, banda_id)
+    if not banda:
+        raise HTTPException(status_code=404, detail="Banda no encontrada")
+    return banda
+
+
+# endopoint para actualizar banda
+
+@app.patch("/bandas/{banda_id}", response_model=BandaPublic)
+def actualiza_banda(banda_id: int, banda_update: Bandaupdate, session: SessionDep):
+    banda_db = session.get(Banda, banda_id)
+    if not banda_db:
+        raise HTTPException(status_code=404, detail="Banda no encontrada")
+    
+    datos_actualizados = banda_update.model_dump(exclude_unset=True)  # Convierte el objeto Pydantic a un diccionario y excluye los campos no establecidos
+    banda_db.sqlmodel_update(datos_actualizados)  # Actualiza el objeto SQLModel con los datos del diccionario
+    
+    session.add(banda_db)
+    session.commit()
+    session.refresh(banda_db)
+    return banda_db
+
+
+
+#endpoint para listar bandas
+
+@app.get("/bandas/", response_model=list[BandaPublic])
+def leer_bandas(
+    session: SessionDep,
+    offset: int = 0,
+    limit: Annotated[int, Query(le=100)] = 10
+):
+    bandas= session.exec(select(Banda).offset(offset).limit(limit)).all()
+    return bandas
+
+
+#endpoint para eliminar banda
 
 @app.delete("/bandas/{banda_id}")
-async def delete_banda(banda_id: int):
-    for banda in bandas:
-        if banda["id"] == banda_id:
-            bandas.remove(banda)
-            return {"Mensaje": "Banda eliminada exitosamente"}
-        
-    raise HTTPException(status_code=404, detail="Banda no encontrada")
+def delete_banda(banda_id: int, session: SessionDep):
+    banda = session.get (Banda, banda_id)
+    if not banda:
+        raise HTTPException(status_code=404, detail="Banda no encontrada")
+    
+    session.delete(banda)
+    session.commit()
+    return{"ok": True, "message": "Banda eliminada correctamente"}
 
 
